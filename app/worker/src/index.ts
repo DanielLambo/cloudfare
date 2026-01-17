@@ -1,12 +1,7 @@
+import type { Env } from "./types";
 
 export { SalesAgent } from "./salesAgentDO";
-export { FinalizeCallWorkflow } from "./workflow";
-
-export interface Env {
-	AI: any; // Workers AI binding
-	SALES_AGENT: DurableObjectNamespace;
-	FINALIZE_CALL: any; // Workflow binding (we will type later)
-}
+export { FinalizeCallWorkflow } from "./workflows";
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -19,6 +14,10 @@ export default {
 				message: string;
 			}>();
 
+			if (!sessionId || !message) {
+				return new Response("Missing sessionId or message", { status: 400 });
+			}
+
 			const id = env.SALES_AGENT.idFromName(sessionId);
 			const stub = env.SALES_AGENT.get(id);
 
@@ -29,6 +28,13 @@ export default {
 			});
 
 			return resp; // returns {reply, dealMemory}
+		}
+
+		if (url.pathname === "/" && request.method === "GET") {
+			return new Response(
+				"OK. Use POST /api/chat with JSON { sessionId, message }",
+				{ headers: { "Content-Type": "text/plain" } }
+			);
 		}
 
 		// --- /api/results ---
@@ -43,13 +49,37 @@ export default {
 			return resp; // includes final outputs when ready
 		}
 
+		// --- /api/debug (temporary) ---
+		if (url.pathname === "/api/debug" && request.method === "GET") {
+			const sessionId = url.searchParams.get("sessionId");
+			if (!sessionId) return new Response("Missing sessionId", { status: 400 });
+
+			const id = env.SALES_AGENT.idFromName(sessionId);
+			const stub = env.SALES_AGENT.get(id);
+
+			return await stub.fetch("https://do/internal/state");
+		}
+
 		// --- /api/end-call ---
 		if (url.pathname === "/api/end-call" && request.method === "POST") {
 			const { sessionId } = await request.json<{ sessionId: string }>();
+			if (!sessionId) return new Response("Missing sessionId", { status: 400 });
 
-			// Workflow trigger happens next step (we’ll implement)
-			// For now return placeholder:
-			return Response.json({ ok: true, message: "Workflow hook next." });
+			// Start workflow instance
+			const instance = await env.FINALIZE_CALL.create({ payload: { sessionId } });
+
+			return Response.json({ ok: true, workflowId: instance.id });
+		}
+
+		// --- /api/reset (temporary for testing) ---
+		if (url.pathname === "/api/reset" && request.method === "POST") {
+			const { sessionId } = await request.json<{ sessionId: string }>();
+			if (!sessionId) return new Response("Missing sessionId", { status: 400 });
+
+			const id = env.SALES_AGENT.idFromName(sessionId);
+			const stub = env.SALES_AGENT.get(id);
+
+			return await stub.fetch("https://do/internal/reset", { method: "POST" });
 		}
 
 		return new Response("Not found", { status: 404 });
